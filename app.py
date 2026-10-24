@@ -334,7 +334,7 @@ def matching_options(options, keyword, search_text):
 
 
 class SearchSelect(ttk.Frame):
-    """一体式搜索下拉框；点击显示前十条，输入后匹配。"""
+    """一体式搜索下拉框；点击列出全部选项，输入后匹配。"""
     def __init__(self, parent, width):
         super().__init__(parent)
         self.options = []
@@ -354,7 +354,11 @@ class SearchSelect(ttk.Frame):
         self.entry.bind('<Escape>', self.hide)
         self.entry.bind('<FocusOut>', lambda _: self.after(120, self.hide_if_unfocused))
         self.bind('<Destroy>', self.cleanup)
-        self.winfo_toplevel().bind('<Configure>', self.parent_moved, add='+')
+        self.parent_window = self.winfo_toplevel()
+        self.configure_binding = self.parent_window.bind('<Configure>', self.parent_moved, add='+')
+
+    def focus_set(self):
+        self.entry.focus_set()
 
     def get(self):
         return self.value.get()
@@ -391,7 +395,7 @@ class SearchSelect(ttk.Frame):
         if self.focus_get() != self.entry:
             return
         keyword = '' if all_options or self.get() in self.options else self.get()
-        self.matches = matching_options(self.options, keyword, self.search_text)[:10]
+        self.matches = matching_options(self.options, keyword, self.search_text)
         if self.popup is None:
             self.popup = tk.Toplevel(self)
             self.popup.withdraw()
@@ -412,7 +416,7 @@ class SearchSelect(ttk.Frame):
         self.results.delete(0, 'end')
         for label in self.matches or ['无匹配结果，请更换关键词']:
             self.results.insert('end', label)
-        self.results.configure(height=max(len(self.matches), 1))
+        self.results.configure(height=min(max(len(self.matches), 1), 10))
         if self.matches:
             self.results.selection_set(0)
             self.results.activate(0)
@@ -476,6 +480,7 @@ class SearchSelect(ttk.Frame):
     def cleanup(self, event):
         if event.widget == self:
             self.hide()
+            self.parent_window.unbind('<Configure>', self.configure_binding)
 
 
 class App(tk.Tk):
@@ -545,7 +550,8 @@ class App(tk.Tk):
         ttk.Label(f, text='货号在保存时自动生成，例如 SP000001。').pack(anchor='w', pady=5)
         line, self.p_entries = self.formline(f, [('商品名称', 24)])
         ttk.Label(line, text='单位').pack(side='left', padx=4)
-        self.product_unit = ttk.Combobox(line, values=('个', '件'), state='readonly', width=5)
+        self.product_unit = SearchSelect(line, width=5)
+        self.product_unit.set_options(('个', '件'))
         self.product_unit.set('件')
         self.product_unit.pack(side='left', padx=(0, 10))
         for label, width in [('售价', 10), ('进价', 10), ('预警库存', 9)]:
@@ -584,7 +590,8 @@ class App(tk.Tk):
                 control = ttk.Entry(content, width=40)
                 control.insert(0, value)
             else:
-                control = ttk.Combobox(content, width=40, values=choices, state='readonly')
+                control = SearchSelect(content, width=40)
+                control.set_options(choices)
                 control.set(value)
             control.grid(row=row, column=1, padx=8, pady=6)
             controls[label] = control
@@ -605,6 +612,7 @@ class App(tk.Tk):
         dialog.bind('<Escape>', lambda _: dialog.destroy())
         dialog.grab_set()
         next(iter(controls.values())).focus_set()
+        return dialog
 
     def edit_product_price(self):
         selected = self.product_tree.selection()
@@ -756,7 +764,7 @@ class App(tk.Tk):
         line = ttk.Frame(f)
         line.pack(fill='x', pady=10)
         ttk.Label(line,text='商品').pack(side='left')
-        self.purchase_product = ttk.Combobox(line, state='readonly', width=44)
+        self.purchase_product = SearchSelect(line, width=42)
         self.purchase_product.pack(side='left', padx=6)
         ttk.Label(line,text='数量').pack(side='left')
         self.purchase_qty = ttk.Entry(line, width=9)
@@ -768,6 +776,7 @@ class App(tk.Tk):
         self.purchase_tree = self.tree(f, ['number','time','name','qty','price','total'],
             [('number','采购单号',205),('time','时间',150),('name','商品',220),('qty','数量',80),('price','单价',90),('total','金额',100)])
         self.purchase_product.bind('<<ComboboxSelected>>', self.fill_purchase_price)
+        self.purchase_product.bind('<<SearchEdited>>', lambda _: self.purchase_price.delete(0, 'end'))
 
     def fill_purchase_price(self, _=None):
         pid = self.product_choices.get(self.purchase_product.get())
@@ -817,7 +826,7 @@ class App(tk.Tk):
         ttk.Button(second,text='修改选中',command=self.edit_cart).pack(side='left', padx=5)
         self.sale_product.bind('<<ComboboxSelected>>',self.fill_sale_price)
         self.sale_product.bind('<<SearchEdited>>', lambda _: self.sale_price.delete(0, 'end'))
-        ttk.Label(f, text='点击客户或商品输入框显示前10个选项；输入名称、电话或货号查找，用鼠标或方向键、回车选中。',
+        ttk.Label(f, text='点击输入框显示全部选项，可滚动查看；输入名称、电话或货号筛选，用鼠标或方向键、回车选中。',
                   foreground='#666666').pack(anchor='w')
         self.cart_tree = self.tree(f,['id','sku','name','qty','price','total'],
             [('id','商品ID',75),('sku','货号',110),('name','商品名称',290),('qty','数量',80),('price','单价',90),('total','小计',100)],height=12)
@@ -1019,9 +1028,9 @@ class App(tk.Tk):
         self.sync_product_checks()
         self.product_tree.tag_configure('low',background='#ffe6e6')
         self.product_choices = {f"{p['sku']} | {p['name']} (库存{p['stock']})":p['id'] for p in products}
-        self.purchase_product['values'] = list(self.product_choices)
-        self.sale_product.set_options(self.product_choices, {
-            label: f"{p['sku']} {p['name']}" for label, p in zip(self.product_choices, products)})
+        product_search = {label: f"{p['sku']} {p['name']}" for label, p in zip(self.product_choices, products)}
+        self.purchase_product.set_options(self.product_choices, product_search)
+        self.sale_product.set_options(self.product_choices, product_search)
         for selector in (self.purchase_product, self.sale_product):
             if selector.get() not in self.product_choices:
                 selector.set('')
@@ -1149,8 +1158,9 @@ if __name__ == '__main__':
                 selector.entry.focus_force()
                 selector.entry.event_generate('<Button-1>', x=5, y=5)
                 window.update()
-                assert selector.matches == selector.options[:10]
-                assert selector.results.size() == 10
+                assert selector.matches == selector.options
+                assert selector.results.size() == 13
+                assert int(selector.results['height']) == 10
                 assert selector.popup.winfo_viewable()
                 assert selector.popup.winfo_width() == selector.entry.winfo_width()
                 selector.entry.insert(0, keyword)
@@ -1161,6 +1171,43 @@ if __name__ == '__main__':
                 window.update()
                 assert selector.get() in selector.options
             assert window.sale_price.get() == '23.00'
+            window.tabs.select(window.frames['采购入库'])
+            window.update()
+            selector = window.purchase_product
+            selector.entry.focus_force()
+            selector.entry.event_generate('<Button-1>', x=5, y=5)
+            window.update()
+            assert selector.results.size() == 13
+            assert selector.popup.winfo_viewable()
+            selector.entry.insert(0, '测试配件')
+            selector.show_results()
+            assert len(selector.matches) == 1
+            selector.accept()
+            assert window.purchase_price.get() == '0.00'
+            window.tabs.select(window.frames['商品库存'])
+            window.update()
+            window.product_unit.entry.focus_force()
+            window.product_unit.entry.event_generate('<Button-1>', x=5, y=5)
+            window.update()
+            assert window.product_unit.matches == ['个', '件']
+            window.product_unit.accept()
+            assert window.product_unit.get() == '个'
+            dialog = window.edit_dialog('下拉框检查', [('商品', '', list(window.product_choices))], lambda _: None)
+            window.update()
+            selector = next(control for control in dialog.winfo_children()[0].winfo_children()
+                            if isinstance(control, SearchSelect))
+            selector.entry.focus_force()
+            selector.entry.event_generate('<Button-1>', x=5, y=5)
+            window.update()
+            assert selector.results.size() == 13
+            assert selector.popup.winfo_viewable()
+            selector.entry.insert(0, '测试配件')
+            selector.show_results()
+            assert len(selector.matches) == 1
+            selector.accept()
+            assert '测试配件' in selector.get()
+            dialog.destroy()
+            window.update()
             assert window.title() == APP_NAME
             assert len(window.tabs.tabs()) == 7
             assert hasattr(window, 'app_icon')
