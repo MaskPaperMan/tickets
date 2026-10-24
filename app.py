@@ -334,7 +334,7 @@ def matching_options(options, keyword, search_text):
 
 
 class SearchSelect(ttk.Frame):
-    """输入时显示候选，焦点保留在输入框，支持中文输入法。"""
+    """一体式搜索下拉框；点击显示前十条，输入后匹配。"""
     def __init__(self, parent, width):
         super().__init__(parent)
         self.options = []
@@ -344,10 +344,10 @@ class SearchSelect(ttk.Frame):
         self.pending = None
         self.setting = False
         self.value = tk.StringVar(self)
-        self.entry = ttk.Entry(self, textvariable=self.value, width=width)
+        self.entry = ttk.Entry(self, textvariable=self.value, width=width + 2)
         self.entry.pack(side='left', fill='x', expand=True)
-        ttk.Button(self, text='▾', width=2, takefocus=False, command=self.show_all).pack(side='right')
         self.value.trace_add('write', self.edited)
+        self.entry.bind('<Button-1>', lambda _: self.after_idle(self.show_all))
         self.entry.bind('<Down>', self.move_down)
         self.entry.bind('<Up>', self.move_up)
         self.entry.bind('<Return>', self.accept)
@@ -385,11 +385,13 @@ class SearchSelect(ttk.Frame):
         self.show_results(all_options=True)
 
     def show_results(self, all_options=False):
+        if self.pending:
+            self.after_cancel(self.pending)
         self.pending = None
         if self.focus_get() != self.entry:
             return
         keyword = '' if all_options or self.get() in self.options else self.get()
-        self.matches = matching_options(self.options, keyword, self.search_text)
+        self.matches = matching_options(self.options, keyword, self.search_text)[:10]
         if self.popup is None:
             self.popup = tk.Toplevel(self)
             self.popup.withdraw()
@@ -410,15 +412,15 @@ class SearchSelect(ttk.Frame):
         self.results.delete(0, 'end')
         for label in self.matches or ['无匹配结果，请更换关键词']:
             self.results.insert('end', label)
-        self.results.configure(height=min(max(len(self.matches), 1), 8))
+        self.results.configure(height=max(len(self.matches), 1))
         if self.matches:
             self.results.selection_set(0)
             self.results.activate(0)
         self.popup.update_idletasks()
-        width = max(self.winfo_width(), 300)
+        width = self.entry.winfo_width()
         height = self.popup.winfo_reqheight()
         x = max(0, min(self.winfo_rootx(), self.winfo_screenwidth() - width))
-        y = self.winfo_rooty() + self.winfo_height()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height() - 1
         if y + height > self.winfo_screenheight():
             y = max(0, self.winfo_rooty() - height)
         self.popup.geometry(f'{width}x{height}+{x}+{y}')
@@ -815,7 +817,7 @@ class App(tk.Tk):
         ttk.Button(second,text='修改选中',command=self.edit_cart).pack(side='left', padx=5)
         self.sale_product.bind('<<ComboboxSelected>>',self.fill_sale_price)
         self.sale_product.bind('<<SearchEdited>>', lambda _: self.sale_price.delete(0, 'end'))
-        ttk.Label(f, text='客户可输入名称或电话，商品可输入货号或名称；点击匹配结果，或用方向键和回车选中。',
+        ttk.Label(f, text='点击客户或商品输入框显示前10个选项；输入名称、电话或货号查找，用鼠标或方向键、回车选中。',
                   foreground='#666666').pack(anchor='w')
         self.cart_tree = self.tree(f,['id','sku','name','qty','price','total'],
             [('id','商品ID',75),('sku','货号',110),('name','商品名称',290),('qty','数量',80),('price','单价',90),('total','小计',100)],height=12)
@@ -1137,11 +1139,20 @@ if __name__ == '__main__':
             # 在 Windows runner 上实际验证输入、候选选择与价格带出。
             create_customer('搜索测试客户', '13800138000')
             create_product('搜索测试配件', price=2300)
+            for i in range(12):
+                create_customer(f'其他客户{i}')
+                create_product(f'其他配件{i}')
             window.refresh_all()
             window.update()
             for selector, keyword in ((window.sale_customer, '1380013'),
                                       (window.sale_product, '测试配件')):
                 selector.entry.focus_force()
+                selector.entry.event_generate('<Button-1>', x=5, y=5)
+                window.update()
+                assert selector.matches == selector.options[:10]
+                assert selector.results.size() == 10
+                assert selector.popup.winfo_viewable()
+                assert selector.popup.winfo_width() == selector.entry.winfo_width()
                 selector.entry.insert(0, keyword)
                 window.update()
                 selector.show_results()
