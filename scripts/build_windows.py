@@ -30,7 +30,7 @@ def main():
         '数据保存在 %LOCALAPPDATA%\\AutoPartsMVP\\autoparts.db。\n'
         '更新程序不影响该位置的已有数据。请使用软件中的备份数据库功能定期备份。\n'
         '打印请选择 A4 横向，并关闭浏览器页眉页脚。\n', encoding='utf-8-sig')
-    print(f'Generated: {exe}')
+    print('Windows executable, instructions and checksums generated in dist/.')
 
 
 if __name__ == '__main__':
