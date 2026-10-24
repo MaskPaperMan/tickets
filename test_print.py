@@ -107,6 +107,16 @@ class PrintTests(unittest.TestCase):
             self.app.create_customer('测试客户')
         self.assertEqual(len(self.app.query('SELECT * FROM customers')), 1)
 
+    def test_search_matches_name_phone_and_sku(self):
+        options = ['客户甲', '客户乙']
+        search = {'客户甲': '客户甲 13800138000', '客户乙': '客户乙 13900139000'}
+        self.assertEqual(self.app.matching_options(options, '1380013', search), ['客户甲'])
+        self.assertEqual(self.app.matching_options(options, '客户', search), options)
+        self.assertEqual(self.app.matching_options(options, ' 客户甲 138 ', search), ['客户甲'])
+        self.assertEqual(self.app.matching_options(options, '', search), options)
+        self.assertEqual(self.app.matching_options(options, '无匹配', search), [])
+        self.assertEqual(self.app.matching_options(['配件'], 'sp0001 马达', {'配件': 'SP0001 马达'}), ['配件'])
+
     def test_batch_delete_is_atomic(self):
         self.app.create_product('零库存商品甲')
         self.app.create_product('零库存商品乙')
