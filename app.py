@@ -342,6 +342,7 @@ class SearchSelect(ttk.Frame):
         self.matches = []
         self.popup = None
         self.pending = None
+        self.focus_pending = None
         self.setting = False
         self.value = tk.StringVar(self)
         self.entry = ttk.Entry(self, textvariable=self.value, width=width + 2)
@@ -352,7 +353,7 @@ class SearchSelect(ttk.Frame):
         self.entry.bind('<Up>', self.move_up)
         self.entry.bind('<Return>', self.accept)
         self.entry.bind('<Escape>', self.hide)
-        self.entry.bind('<FocusOut>', lambda _: self.after(120, self.hide_if_unfocused))
+        self.entry.bind('<FocusOut>', self.schedule_focus_check)
         self.bind('<Destroy>', self.cleanup)
         self.parent_window = self.winfo_toplevel()
         self.configure_binding = self.parent_window.bind('<Configure>', self.parent_moved, add='+')
@@ -412,7 +413,7 @@ class SearchSelect(ttk.Frame):
             self.results.bind('<ButtonRelease-1>', self.accept)
             self.results.bind('<Return>', self.accept)
             self.results.bind('<Escape>', self.hide)
-            self.results.bind('<FocusOut>', lambda _: self.after(120, self.hide_if_unfocused))
+            self.results.bind('<FocusOut>', self.schedule_focus_check)
         self.results.delete(0, 'end')
         for label in self.matches or ['无匹配结果，请更换关键词']:
             self.results.insert('end', label)
@@ -469,7 +470,13 @@ class SearchSelect(ttk.Frame):
             self.popup.withdraw()
         return 'break'
 
+    def schedule_focus_check(self, _=None):
+        if self.focus_pending:
+            self.after_cancel(self.focus_pending)
+        self.focus_pending = self.after(120, self.hide_if_unfocused)
+
     def hide_if_unfocused(self):
+        self.focus_pending = None
         if self.focus_get() not in (self.entry, getattr(self, 'results', None)):
             self.hide()
 
@@ -480,6 +487,8 @@ class SearchSelect(ttk.Frame):
     def cleanup(self, event):
         if event.widget == self:
             self.hide()
+            if self.focus_pending:
+                self.after_cancel(self.focus_pending)
             self.parent_window.unbind('<Configure>', self.configure_binding)
 
 
