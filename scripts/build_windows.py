@@ -1,20 +1,27 @@
 """在 Windows 上生成带图标的独立 EXE，仅打包程序和图标。"""
 import hashlib
+import argparse
+import os
 from pathlib import Path
 import subprocess
 import sys
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--windows7', action='store_true')
+    options = parser.parse_args()
     if sys.platform != 'win32':
         raise SystemExit('请在 Windows 或 GitHub Windows runner 上运行此脚本。')
     root = Path(__file__).resolve().parent.parent
     name = '汽配批发管理系统'
+    if options.windows7 and sys.version_info[:2] != (3, 8):
+        raise SystemExit('Windows 7 builds require Python 3.8.')
     subprocess.run([
         sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean',
         '--onefile', '--windowed', '--name', name,
         '--icon', str(root / 'assets' / 'app-icon.ico'),
-        '--add-data', f'{root / "assets"}:assets',
+        '--add-data', f'{root / "assets"}{os.pathsep}assets',
         str(root / 'app.py'),
     ], cwd=root, check=True)
     dist = root / 'dist'
@@ -25,7 +32,10 @@ def main():
     (dist / 'SHA256SUMS.txt').write_text(f'{digest}  {exe.name}\n', encoding='utf-8')
     (dist / 'README.txt').write_text(
         f'{name}\n\n'
-        '适用于 Windows 10/11 64 位。解压后双击 EXE 启动，无需安装 Python。\n'
+        + ('Windows 7 SP1 兼容版（32 位，也可在 64 位系统使用）。\n'
+           '使用 Python 3.8.10 和 PyInstaller 5.13.2 构建；尚未在真实 Windows 7 上验证。\n'
+           if options.windows7 else '适用于 Windows 10/11 64 位。\n')
+        + '解压后双击 EXE 启动，无需安装 Python。\n'
         '首次启动请在系统设置中填写公司资料。\n'
         '数据保存在 %LOCALAPPDATA%\\AutoPartsMVP\\autoparts.db。\n'
         '更新程序不影响该位置的已有数据。请使用软件中的备份数据库功能定期备份。\n'

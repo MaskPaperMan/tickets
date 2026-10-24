@@ -1,0 +1,54 @@
+name: Windows 7 EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.8.10'
+          architecture: x86
+      - name: Install build dependency
+        run: python -m pip install setuptools==68.2.2 pyinstaller==5.13.2 pyinstaller-hooks-contrib==2023.8 pefile==2023.2.7
+      - name: Run regression tests
+        run: python -m unittest discover -v
+      - name: Build Windows executable
+        run: python scripts/build_windows.py --windows7
+      - name: Test packaged application startup
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'autoparts-smoke'
+          $report = Join-Path $env:RUNNER_TEMP 'autoparts-smoke.json'
+          $exe = (Get-ChildItem dist -Filter *.exe).FullName
+          $process = Start-Process -FilePath $exe -ArgumentList '--smoke-test', $report -PassThru
+          if (-not $process.WaitForExit(60000)) {
+            $process.Kill()
+            throw 'Packaged application startup timed out'
+          }
+          if ($process.ExitCode -ne 0 -or -not (Test-Path $report)) {
+            throw 'Packaged application startup failed'
+          }
+          $result = Get-Content $report -Raw | ConvertFrom-Json
+          if (-not $result.ok) { throw 'Smoke test report indicates failure' }
+          Get-Content $report
+      - uses: actions/upload-artifact@v7
+        with:
+          name: autoparts-windows7-x86
+          path: |
+            dist/*.exe
+            dist/README.txt
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

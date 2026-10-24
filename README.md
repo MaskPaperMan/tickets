@@ -63,6 +63,8 @@ Windows 下对应命令为 `.venv\Scripts\python.exe app.py`。
 
 GitHub 构建：在仓库 Actions 中选择 Windows EXE 并运行。构建会执行测试、生成带图标的 Windows 64 位 EXE，并检查打包程序启动。成功后下载 `autoparts-windows-x64` 构建产物，解压并双击 EXE 即可使用，无需安装 Python。构建产物包含使用说明和 SHA256 校验文件，保留 30 天。
 
+Windows 7 SP1：选择单独的 `Windows 7 EXE` 工作流，下载 `autoparts-windows7-x86`。该版本使用 Python 3.8.10、PyInstaller 5.13.2 生成 32 位程序，可用于 32 位和 64 位系统。GitHub 启动检查运行在较新 Windows 上，尚未在真实 Win7 验证。普通 Windows EXE 工作流使用 Python 3.12，不适用于 Win7。兼容版不需要用户安装 Python，数据位置保持一致。
+
 本地 Windows 构建：
 
 `py -m pip install pyinstaller`
