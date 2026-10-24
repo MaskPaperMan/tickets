@@ -1,0 +1,9 @@
+[project]
+name = "autoparts-mvp"
+version = "0.1.0"
+description = "汽配批发单机管理程序"
+requires-python = ">=3.12,<3.13"
+dependencies = []
+
+[tool.uv]
+package = false
