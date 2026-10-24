@@ -1,6 +1,7 @@
 """打印内容回归测试；只使用临时数据库，不打开浏览器。"""
 import importlib.util
 import os
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
@@ -120,6 +121,19 @@ class PrintTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in self.app.query('SELECT id FROM products WHERE active=1')], [self.product])
         with self.assertRaisesRegex(ValueError, '勾选'):
             self.app.delete_products([])
+
+    def test_database_connection_closes_and_rolls_back(self):
+        with self.app.db() as connection:
+            connection.execute('SELECT 1')
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute('SELECT 1')
+        with self.assertRaises(ValueError):
+            with self.app.db() as connection:
+                connection.execute("INSERT INTO customers(name) VALUES('回滚测试')")
+                raise ValueError('rollback')
+        self.assertEqual(self.app.query("SELECT * FROM customers WHERE name='回滚测试'"), [])
+        with self.assertRaises(sqlite3.ProgrammingError):
+            connection.execute('SELECT 1')
 
     def test_price_update_preserves_historical_sale(self):
         sale_id = self.app.create_sale(self.customer, [(self.product, 1, 2300)])

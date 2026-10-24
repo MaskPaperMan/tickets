@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import sys
 import webbrowser
+from contextlib import closing, contextmanager
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -93,12 +94,17 @@ def now():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
+@contextmanager
 def db():
     con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    con.execute('PRAGMA foreign_keys=ON')
-    con.execute('PRAGMA busy_timeout=5000')
-    return con
+    try:
+        con.row_factory = sqlite3.Row
+        con.execute('PRAGMA foreign_keys=ON')
+        con.execute('PRAGMA busy_timeout=5000')
+        with con:
+            yield con
+    finally:
+        con.close()
 
 
 def init_db():
@@ -956,7 +962,7 @@ th{{font-size:15pt}}td.text{{text-align:left}}thead{{display:table-header-group}
         if not target:
             return
         try:
-            with db() as source, sqlite3.connect(target) as dest:
+            with db() as source, closing(sqlite3.connect(target)) as dest:
                 source.backup(dest)
             messagebox.showinfo('备份成功',f'数据库已备份至：{target}')
         except (OSError,sqlite3.Error) as ex:
