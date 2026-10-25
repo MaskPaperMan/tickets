@@ -37,7 +37,7 @@ class PrintTests(unittest.TestCase):
 
     def test_reference_layout(self):
         page = self.print_order([(self.product, 6, 2300)])
-        for text in ['A4 landscape', 'font-family:"宋体","SimSun"', '测试公司&lt;&amp;&gt;批发清单', '马达 发电机',
+        for text in ['A4 landscape', 'font-family:"黑体","SimHei"', '测试公司&lt;&amp;&gt;批发清单', '马达 发电机',
                      '测试客户', '客户地址', '配件编码', '品牌', '备注', '地址：测试路8号',
                      '电话：12345678', '客户签名：', '人民币（大写）：壹佰叁拾捌元整',
                      '138.00', '已收：¥1.00', '未收：¥137.00', '<td>6</td>']:
