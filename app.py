@@ -190,6 +190,89 @@ def create_product(name, unit='件', price=0, cost=0, minimum=0):
     return sku
 
 
+def update_product(product_id, name, unit, price):
+    name = name.strip()
+    if not name:
+        raise ValueError('商品名称不能为空')
+    if unit not in ('个', '件') or price < 0:
+        raise ValueError('单位请选择个或件，销售价不能为负数')
+    with db() as c:
+        if not c.execute('UPDATE products SET name=?,unit=?,sale_price=? WHERE id=? AND active=1',
+                         (name, unit, price, product_id)).rowcount:
+            raise ValueError('商品不存在或已删除')
+
+
+def apply_purchase_changes(c, deltas, source_id, reason):
+    for product_id, delta in deltas.items():
+        p = c.execute('SELECT name,stock FROM products WHERE id=?', (product_id,)).fetchone()
+        if p['stock'] + delta < 0:
+            raise ValueError(f"{p['name']}库存不足：现有{p['stock']}，需扣回{-delta}，本次操作未保存")
+    for product_id, delta in deltas.items():
+        c.execute('UPDATE products SET stock=stock+? WHERE id=?', (delta, product_id))
+        if delta:
+            c.execute('INSERT INTO inventory_movements(product_id,created_at,change_qty,source_type,source_id) VALUES(?,?,?,?,?)',
+                      (product_id, now(), delta, reason, source_id))
+
+
+def refresh_purchase_costs(c, product_ids):
+    for product_id in product_ids:
+        latest = c.execute('SELECT unit_price FROM purchase_items WHERE product_id=? ORDER BY purchase_id DESC,id DESC LIMIT 1',
+                           (product_id,)).fetchone()
+        c.execute('UPDATE products SET purchase_price=? WHERE id=?', (latest[0] if latest else 0, product_id))
+
+
+def update_purchase(item_id, product_id, qty, price):
+    if qty <= 0 or price < 0:
+        raise ValueError('数量必须大于0，进价不能为负数')
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        old = c.execute('SELECT * FROM purchase_items WHERE id=?', (item_id,)).fetchone()
+        if not old:
+            raise ValueError('入库记录不存在或已删除')
+        if not c.execute('SELECT 1 FROM products WHERE id=? AND active=1', (product_id,)).fetchone():
+            raise ValueError('请选择未删除的商品')
+        deltas = {old['product_id']: -old['qty']}
+        deltas[product_id] = deltas.get(product_id, 0) + qty
+        apply_purchase_changes(c, deltas, old['purchase_id'], '采购修改')
+        c.execute('UPDATE purchase_items SET product_id=?,qty=?,unit_price=?,amount=? WHERE id=?',
+                  (product_id, qty, price, qty * price, item_id))
+        c.execute('UPDATE purchases SET total=(SELECT SUM(amount) FROM purchase_items WHERE purchase_id=?) WHERE id=?',
+                  (old['purchase_id'], old['purchase_id']))
+        refresh_purchase_costs(c, deltas)
+
+
+def delete_purchases(item_ids):
+    item_ids = list(dict.fromkeys(item_ids))
+    if not item_ids:
+        raise ValueError('请先勾选入库记录')
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        rows = []
+        deltas = {}
+        for item_id in item_ids:
+            row = c.execute('SELECT * FROM purchase_items WHERE id=?', (item_id,)).fetchone()
+            if not row:
+                raise ValueError('有入库记录不存在或已删除，本次操作未保存')
+            rows.append(row)
+            deltas[row['product_id']] = deltas.get(row['product_id'], 0) - row['qty']
+        # 先验证所有商品的合计扣回数量，随后在同一事务中逐条记录流水。
+        for product_id, delta in deltas.items():
+            p = c.execute('SELECT name,stock FROM products WHERE id=?', (product_id,)).fetchone()
+            if p['stock'] + delta < 0:
+                raise ValueError(f"{p['name']}库存不足：现有{p['stock']}，需扣回{-delta}，本次未删除任何记录")
+        for row in rows:
+            apply_purchase_changes(c, {row['product_id']: -row['qty']}, row['purchase_id'], '采购删除')
+            c.execute('DELETE FROM purchase_items WHERE id=?', (row['id'],))
+        for purchase_id in {row['purchase_id'] for row in rows}:
+            total = c.execute('SELECT SUM(amount) FROM purchase_items WHERE purchase_id=?', (purchase_id,)).fetchone()[0]
+            if total is None:
+                # 保留单号占位，避免新采购复用已有库存流水的来源 ID。
+                c.execute('UPDATE purchases SET total=0 WHERE id=?', (purchase_id,))
+            else:
+                c.execute('UPDATE purchases SET total=? WHERE id=?', (total, purchase_id))
+        refresh_purchase_costs(c, deltas)
+
+
 def update_product_price(product_id, price):
     if price < 0:
         raise ValueError('销售价不能为负数')
@@ -573,7 +656,7 @@ class App(tk.Tk):
         actions = ttk.Frame(f)
         actions.pack(fill='x', pady=4)
         ttk.Button(actions, text='删除', command=self.do_delete_product).pack(side='left')
-        ttk.Button(actions, text='修改销售价', command=self.edit_product_price).pack(side='left', padx=5)
+        ttk.Button(actions, text='修改', command=self.edit_product).pack(side='left', padx=5)
         ttk.Label(actions, text='仅可删除零库存商品，历史单据和流水保留。').pack(side='left', padx=10)
         self.product_tree = self.tree(f, ['id','sku','name','unit','cost','price','stock','minstock'],
             [('id','ID',45),('sku','货号',100),('name','商品名称',250),('unit','单位',70),('cost','参考进价',90),('price','销售价',90),('stock','库存',80),('minstock','预警值',80)])
@@ -623,22 +706,23 @@ class App(tk.Tk):
         next(iter(controls.values())).focus_set()
         return dialog
 
-    def edit_product_price(self):
+    def edit_product(self):
         selected = self.product_tree.selection()
         if len(selected) != 1:
-            messagebox.showwarning('请选择一个商品', '修改销售价时请只选择一个商品')
+            messagebox.showwarning('请选择一个商品', '修改时请只选择一个商品')
             return
         product_id = int(self.product_tree.item(selected[0], 'values')[0])
         product = query('SELECT * FROM products WHERE id=?', (product_id,))[0]
 
         def save(values):
-            update_product_price(product_id, money(values['销售价（元）']))
+            update_product(product_id, values['商品名称'], values['单位'], money(values['销售价（元）']))
             self.refresh_all()
             if self.product_choices.get(self.sale_product.get()) == product_id:
                 self.fill_sale_price()
 
-        self.edit_dialog(f"修改销售价 · {product['name']}",
-                         [('销售价（元）', fmt(product['sale_price']), None)], save)
+        self.edit_dialog(f"修改商品 · {product['sku']}",
+                         [('商品名称', product['name'], None), ('单位', product['unit'], ('个', '件')),
+                          ('销售价（元）', fmt(product['sale_price']), None)], save)
 
     def sync_product_checks(self, _=None):
         self.checked_product_ids = set(self.product_tree.selection())
@@ -782,10 +866,98 @@ class App(tk.Tk):
         self.purchase_price = ttk.Entry(line, width=11)
         self.purchase_price.pack(side='left', padx=6)
         ttk.Button(line,text='确认入库',command=self.do_purchase).pack(side='left', padx=7)
-        self.purchase_tree = self.tree(f, ['number','time','name','qty','price','total'],
-            [('number','采购单号',205),('time','时间',150),('name','商品',220),('qty','数量',80),('price','单价',90),('total','金额',100)])
+        actions = ttk.Frame(f)
+        actions.pack(fill='x', pady=4)
+        ttk.Button(actions, text='修改', command=self.edit_purchase).pack(side='left')
+        ttk.Button(actions, text='删除', command=self.do_delete_purchase).pack(side='left', padx=5)
+        ttk.Label(actions, text='修改或删除自动调整库存，库存不足时不能操作。').pack(side='left', padx=10)
+        self.purchase_tree = self.tree(f, ['number','time','sku','name','qty','price','total'],
+            [('number','采购单号',205),('time','时间',150),('sku','货号',100),('name','商品',220),('qty','数量',80),('price','单价',90),('total','金额',100)])
+        self.purchase_tree.configure(show='tree headings', selectmode='extended')
+        self.purchase_tree.column('#0', width=65, minwidth=65, stretch=False)
+        self.purchase_tree.heading('#0', text='☐ 全选', command=self.toggle_all_purchases)
+        self.purchase_tree.bind('<<TreeviewSelect>>', self.sync_purchase_checks)
+        self.purchase_tree.bind('<Button-1>', self.toggle_purchase_check)
+        self.purchase_tree.bind('<space>', self.toggle_focused_purchase)
         self.purchase_product.bind('<<ComboboxSelected>>', self.fill_purchase_price)
         self.purchase_product.bind('<<SearchEdited>>', lambda _: self.purchase_price.delete(0, 'end'))
+
+    def sync_purchase_checks(self, _=None):
+        tree = self.purchase_tree
+        selected = set(tree.selection())
+        rows = tree.get_children()
+        for row in rows:
+            tree.item(row, text='☑' if row in selected else '☐')
+        tree.heading('#0', text='☑ 全选' if rows and len(selected) == len(rows) else '☐ 全选')
+
+    def toggle_all_purchases(self):
+        tree = self.purchase_tree
+        rows = tree.get_children()
+        if rows and len(tree.selection()) == len(rows):
+            tree.selection_remove(*rows)
+        else:
+            tree.selection_set(rows)
+        self.sync_purchase_checks()
+
+    def toggle_purchase_row(self, row):
+        tree = self.purchase_tree
+        if row in tree.selection():
+            tree.selection_remove(row)
+        else:
+            tree.selection_add(row)
+        tree.focus(row)
+        self.sync_purchase_checks()
+
+    def toggle_purchase_check(self, event):
+        tree = self.purchase_tree
+        if tree.identify_region(event.x, event.y) in ('tree', 'cell') and tree.identify_column(event.x) == '#0':
+            row = tree.identify_row(event.y)
+            if row:
+                self.toggle_purchase_row(row)
+                return 'break'
+
+    def toggle_focused_purchase(self, _=None):
+        row = self.purchase_tree.focus()
+        if row:
+            self.toggle_purchase_row(row)
+        return 'break'
+
+    def edit_purchase(self):
+        selected = self.purchase_tree.selection()
+        if len(selected) != 1:
+            messagebox.showwarning('请选择一条记录', '修改时请只选择一条入库记录')
+            return
+        item_id = int(selected[0])
+        old = query('SELECT * FROM purchase_items WHERE id=?', (item_id,))[0]
+        choices = dict(self.product_choices)
+        label = next((label for label, pid in choices.items() if pid == old['product_id']), '')
+
+        def save(values):
+            product_id = choices.get(values['商品'])
+            if product_id is None:
+                raise ValueError('请选择商品')
+            update_purchase(item_id, product_id, int(values['数量']), money(values['进价（元）']))
+            self.refresh_all()
+
+        self.edit_dialog('修改采购入库', [('商品', label, choices), ('数量', str(old['qty']), None),
+                                       ('进价（元）', fmt(old['unit_price']), None)], save)
+
+    def do_delete_purchase(self):
+        selected = self.purchase_tree.selection()
+        if not selected:
+            messagebox.showwarning('未选择', '请先勾选要删除的入库记录')
+            return
+        details = []
+        for row in selected:
+            values = self.purchase_tree.item(row, 'values')
+            details.append(f'{values[2]} {values[3]}：扣回 {values[4]}')
+        if not messagebox.askyesno('删除采购入库', f'确定删除 {len(selected)} 条入库记录？库存将扣回：\n' + '\n'.join(details), parent=self):
+            return
+        try:
+            delete_purchases([int(row) for row in selected])
+            self.refresh_all()
+        except (ValueError, sqlite3.Error) as ex:
+            messagebox.showerror('删除失败', str(ex))
 
     def fill_purchase_price(self, _=None):
         pid = self.product_choices.get(self.purchase_product.get())
@@ -1052,12 +1224,13 @@ class App(tk.Tk):
             label: f"{c['id']} {c['name']} {c['phone']}" for label, c in zip(self.customer_choices, customers)})
         self.sale_customer.set(next((label for label, cid in self.customer_choices.items()
                                      if cid == selected_customer), ''))
-        purchases = query('''SELECT pu.number,pu.created_at,pr.name,pi.qty,pi.unit_price,pi.amount
+        purchases = query('''SELECT pi.id,pu.number,pu.created_at,pr.sku,pr.name,pi.qty,pi.unit_price,pi.amount
                              FROM purchases pu JOIN purchase_items pi ON pi.purchase_id=pu.id
                              JOIN products pr ON pr.id=pi.product_id ORDER BY pu.id DESC LIMIT 500''')
         self.purchase_tree.delete(*self.purchase_tree.get_children())
         for p in purchases:
-            self.purchase_tree.insert('','end',values=(p[0],p[1],p[2],p[3],fmt(p[4]),fmt(p[5])))
+            self.purchase_tree.insert('','end',iid=str(p[0]),text='☐',values=(p[1],p[2],p[3],p[4],p[5],fmt(p[6]),fmt(p[7])))
+        self.sync_purchase_checks()
         rows = self.sale_rows()
         self.history_tree.delete(*self.history_tree.get_children())
         self.debt_tree.delete(*self.debt_tree.get_children())
@@ -1217,6 +1390,19 @@ if __name__ == '__main__':
             assert '测试配件' in selector.get()
             dialog.destroy()
             window.update()
+            create_purchase(1, 10, 100)
+            window.refresh_all()
+            window.toggle_all_purchases()
+            assert len(window.purchase_tree.selection()) == 1
+            window.edit_purchase()
+            window.update()
+            editor = next(w for w in window.winfo_children() if isinstance(w, tk.Toplevel) and w.title() == '修改采购入库')
+            editor.destroy()
+            window.product_tree.selection_set('1')
+            window.edit_product()
+            window.update()
+            editor = next(w for w in window.winfo_children() if isinstance(w, tk.Toplevel) and w.title().startswith('修改商品'))
+            editor.destroy()
             assert window.title() == APP_NAME
             assert len(window.tabs.tabs()) == 7
             assert hasattr(window, 'app_icon')

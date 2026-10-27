@@ -210,6 +210,54 @@ class PrintTests(unittest.TestCase):
         self.app.App.toggle_all_products(screen)
         self.assertEqual(screen.checked_product_ids, set())
 
+    def test_product_edit_preserves_confirmed_sale(self):
+        sale = self.app.create_sale(self.customer, [(self.product, 1, 2300)])
+        original = dict(self.app.query('SELECT * FROM sale_items WHERE sale_id=?', (sale,))[0])
+        self.app.update_product(self.product, '新名称', '件', 9000)
+        product = self.app.query('SELECT * FROM products WHERE id=?', (self.product,))[0]
+        self.assertEqual((product['name'], product['unit'], product['sale_price'], product['stock']), ('新名称', '件', 9000, 99))
+        self.assertEqual(dict(self.app.query('SELECT * FROM sale_items WHERE sale_id=?', (sale,))[0]), original)
+        with self.assertRaises(ValueError):
+            self.app.update_product(self.product, '', '个', 100)
+
+    def test_purchase_edit_stock_and_rollback(self):
+        item = self.app.query('SELECT id FROM purchase_items')[0][0]
+        self.app.create_sale(self.customer, [(self.product, 60, 2300)])
+        self.app.update_purchase(item, self.product, 80, 1200)
+        self.assertEqual(self.app.query('SELECT stock FROM products')[0][0], 20)
+        self.assertEqual(self.app.query('SELECT total FROM purchases')[0][0], 96000)
+        with self.assertRaises(ValueError):
+            self.app.update_purchase(item, self.product, 50, 1500)
+        self.assertEqual(self.app.query('SELECT qty FROM purchase_items')[0][0], 80)
+        self.assertEqual(self.app.query('SELECT stock FROM products')[0][0], 20)
+        self.assertEqual(self.app.query('SELECT SUM(change_qty) FROM inventory_movements')[0][0], 20)
+
+    def test_purchase_switch_product_and_delete(self):
+        item = self.app.query('SELECT id FROM purchase_items')[0][0]
+        self.app.create_product('第二商品')
+        other = self.app.query('SELECT MAX(id) FROM products')[0][0]
+        self.app.update_purchase(item, other, 8, 500)
+        self.assertEqual([r[0] for r in self.app.query('SELECT stock FROM products ORDER BY id')], [0, 8])
+        self.app.delete_purchases([item])
+        self.assertFalse(self.app.query('SELECT * FROM purchase_items'))
+        self.assertEqual(self.app.query('SELECT stock,purchase_price FROM products WHERE id=?', (other,))[0][:], (0, 0))
+        new_purchase = self.app.create_purchase(other, 2, 700)
+        self.assertGreater(new_purchase, 1)
+
+    def test_purchase_batch_delete_checks_combined_quantity(self):
+        self.app.create_purchase(self.product, 20, 1500)
+        self.app.create_sale(self.customer, [(self.product, 10, 2300)])
+        ids = [r[0] for r in self.app.query('SELECT id FROM purchase_items')]
+        with self.assertRaises(ValueError):
+            self.app.delete_purchases(ids)
+        self.assertEqual(len(self.app.query('SELECT * FROM purchase_items')), 2)
+        self.assertEqual(self.app.query('SELECT stock FROM products')[0][0], 110)
+        self.app.delete_purchases([ids[1]])
+        self.assertEqual(self.app.query('SELECT stock,purchase_price FROM products')[0][:], (90, 1000))
+        with self.assertRaises(ValueError):
+            self.app.delete_purchases([ids[0], 99999])
+        self.assertEqual(len(self.app.query('SELECT * FROM purchase_items')), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
