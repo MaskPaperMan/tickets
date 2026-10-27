@@ -258,6 +258,32 @@ class PrintTests(unittest.TestCase):
             self.app.delete_purchases([ids[0], 99999])
         self.assertEqual(len(self.app.query('SELECT * FROM purchase_items')), 1)
 
+    def test_add_cart_empty_or_invalid_quantity(self):
+        for value in ('', '   ', 'abc', '1.5'):
+            with self.subTest(value=value):
+                screen = SimpleNamespace(
+                    product_choices={'商品': self.product}, sale_product=Mock(),
+                    sale_qty=Mock(), sale_price=Mock(), cart=[], redraw_cart=Mock())
+                screen.sale_product.get.return_value = '商品'
+                screen.sale_qty.get.return_value = value
+                with patch.object(self.app.messagebox, 'showwarning') as warning, patch.object(self.app.messagebox, 'showerror') as error:
+                    self.app.App.add_cart(screen)
+                warning.assert_called_once()
+                error.assert_not_called()
+                screen.sale_qty.focus_set.assert_called_once()
+                self.assertEqual(screen.cart, [])
+                screen.redraw_cart.assert_not_called()
+
+    def test_add_cart_valid_quantity(self):
+        screen = SimpleNamespace(product_choices={'商品': self.product}, sale_product=Mock(),
+                                 sale_qty=Mock(), sale_price=Mock(), cart=[], redraw_cart=Mock())
+        screen.sale_product.get.return_value = '商品'
+        screen.sale_qty.get.return_value = ' 2 '
+        screen.sale_price.get.return_value = '23.00'
+        self.app.App.add_cart(screen)
+        self.assertEqual(screen.cart, [(self.product, 2, 2300)])
+        screen.redraw_cart.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1074,7 +1074,17 @@ class App(tk.Tk):
             pid = self.product_choices.get(self.sale_product.get())
             if not pid:
                 raise ValueError('请选择商品')
-            qty = int(self.sale_qty.get())
+            quantity_text = self.sale_qty.get().strip()
+            if not quantity_text:
+                messagebox.showwarning('请填写数量', '请输入商品数量后再添加')
+                self.sale_qty.focus_set()
+                return
+            try:
+                qty = int(quantity_text)
+            except ValueError:
+                messagebox.showwarning('数量格式不正确', '商品数量请输入大于0的整数，例如：1、2、3')
+                self.sale_qty.focus_set()
+                return
             price = money(self.sale_price.get())
             if qty <= 0:
                 raise ValueError('数量必须大于0')
