@@ -596,7 +596,7 @@ class App(tk.Tk):
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill='both', expand=True, padx=12, pady=12)
         self.frames = {}
-        for name in ['销售开单', '商品库存', '采购入库', '客户管理', '客户欠款', '销售记录', '系统设置']:
+        for name in ['销售开单', '商品库存', '客户管理', '客户欠款', '销售记录', '系统设置']:
             f = ttk.Frame(self.tabs, padding=10)
             self.tabs.add(f, text=name)
             self.frames[name] = f
@@ -658,8 +658,15 @@ class App(tk.Tk):
         ttk.Button(actions, text='删除', command=self.do_delete_product).pack(side='left')
         ttk.Button(actions, text='修改', command=self.edit_product).pack(side='left', padx=5)
         ttk.Label(actions, text='仅可删除零库存商品，历史单据和流水保留。').pack(side='left', padx=10)
-        self.product_tree = self.tree(f, ['id','sku','name','unit','cost','price','stock','minstock'],
-            [('id','ID',45),('sku','货号',100),('name','商品名称',250),('unit','单位',70),('cost','参考进价',90),('price','销售价',90),('stock','库存',80),('minstock','预警值',80)])
+        ttk.Button(actions, text='入库记录', command=self.open_purchase_history).pack(side='left', padx=5)
+        search = ttk.Frame(f)
+        search.pack(fill='x')
+        ttk.Label(search, text='搜索商品').pack(side='left')
+        self.product_search = tk.StringVar()
+        ttk.Entry(search, textvariable=self.product_search, width=36).pack(side='left', padx=5)
+        self.product_search.trace_add('write', lambda *_: self.refresh_all())
+        self.product_tree = self.tree(f, ['id','sku','name','unit','cost','price','stock','minstock','purchase'],
+            [('id','ID',45),('sku','货号',100),('name','商品名称',250),('unit','单位',70),('cost','参考进价',90),('price','销售价',90),('stock','库存',80),('minstock','预警值',80),('purchase','操作',100)])
         self.checked_product_ids = set()
         self.product_tree.configure(show='tree headings', selectmode='extended')
         self.product_tree.column('#0', width=65, minwidth=65, stretch=False)
@@ -741,6 +748,11 @@ class App(tk.Tk):
         self.sync_product_checks()
 
     def toggle_product_check(self, event):
+        if self.product_tree.identify_region(event.x, event.y) == 'cell' and self.product_tree.identify_column(event.x) == '#9':
+            row = self.product_tree.identify_row(event.y)
+            if row:
+                self.open_product_purchase(int(row))
+                return 'break'
         if (self.product_tree.identify_region(event.x, event.y) in ('tree', 'cell')
                 and self.product_tree.identify_column(event.x) == '#0'):
             row = self.product_tree.identify_row(event.y)
@@ -851,21 +863,45 @@ class App(tk.Tk):
         except (ValueError, sqlite3.IntegrityError) as ex:
             messagebox.showerror('新增失败', str(ex))
 
+    def open_product_purchase(self, product_id):
+        products = query('SELECT * FROM products WHERE id=? AND active=1', (product_id,))
+        if not products:
+            messagebox.showwarning('商品不存在', '请刷新商品列表')
+            return
+        product = products[0]
+
+        def save(values):
+            try:
+                qty = int(values['数量'].strip())
+            except ValueError:
+                raise ValueError('请输入大于0的整数数量') from None
+            create_purchase(product_id, qty, money(values['进价（元）']))
+            self.refresh_all()
+
+        return self.edit_dialog(f"采购入库 · {product['sku']} · {product['name']}",
+                                [('数量', '', None), ('进价（元）', fmt(product['purchase_price']), None)], save)
+
+    def open_purchase_history(self):
+        self.refresh_purchase_history()
+        self.purchase_window.deiconify()
+        self.purchase_window.lift()
+
     def build_purchase(self):
-        f = self.frames['采购入库']
-        ttk.Label(f, text='第一版每次录入一种商品；多种商品可连续操作。', foreground='#555').pack(anchor='w', pady=7)
+        self.purchase_window = tk.Toplevel(self)
+        self.purchase_window.withdraw()
+        self.purchase_window.title('入库记录')
+        self.purchase_window.geometry('1100x600')
+        self.purchase_window.transient(self)
+        self.purchase_window.protocol('WM_DELETE_WINDOW', self.purchase_window.withdraw)
+        f = ttk.Frame(self.purchase_window, padding=12)
+        f.pack(fill='both', expand=True)
         line = ttk.Frame(f)
-        line.pack(fill='x', pady=10)
-        ttk.Label(line,text='商品').pack(side='left')
+        line.pack(fill='x')
+        ttk.Label(line, text='筛选商品').pack(side='left')
         self.purchase_product = SearchSelect(line, width=42)
         self.purchase_product.pack(side='left', padx=6)
-        ttk.Label(line,text='数量').pack(side='left')
-        self.purchase_qty = ttk.Entry(line, width=9)
-        self.purchase_qty.pack(side='left', padx=6)
-        ttk.Label(line,text='进价（元）').pack(side='left')
-        self.purchase_price = ttk.Entry(line, width=11)
-        self.purchase_price.pack(side='left', padx=6)
-        ttk.Button(line,text='确认入库',command=self.do_purchase).pack(side='left', padx=7)
+        ttk.Button(line, text='筛选', command=self.refresh_purchase_history).pack(side='left')
+        ttk.Button(line, text='全部记录', command=self.clear_purchase_filter).pack(side='left', padx=5)
         actions = ttk.Frame(f)
         actions.pack(fill='x', pady=4)
         ttk.Button(actions, text='修改', command=self.edit_purchase).pack(side='left')
@@ -879,8 +915,7 @@ class App(tk.Tk):
         self.purchase_tree.bind('<<TreeviewSelect>>', self.sync_purchase_checks)
         self.purchase_tree.bind('<Button-1>', self.toggle_purchase_check)
         self.purchase_tree.bind('<space>', self.toggle_focused_purchase)
-        self.purchase_product.bind('<<ComboboxSelected>>', self.fill_purchase_price)
-        self.purchase_product.bind('<<SearchEdited>>', lambda _: self.purchase_price.delete(0, 'end'))
+        self.purchase_product.bind('<<ComboboxSelected>>', lambda _: self.refresh_purchase_history())
 
     def sync_purchase_checks(self, _=None):
         tree = self.purchase_tree
@@ -958,27 +993,6 @@ class App(tk.Tk):
             self.refresh_all()
         except (ValueError, sqlite3.Error) as ex:
             messagebox.showerror('删除失败', str(ex))
-
-    def fill_purchase_price(self, _=None):
-        pid = self.product_choices.get(self.purchase_product.get())
-        if pid:
-            p = query('SELECT purchase_price FROM products WHERE id=?', (pid,))[0]
-            self.purchase_price.delete(0, 'end')
-            self.purchase_price.insert(0, fmt(p['purchase_price']))
-
-    def do_purchase(self):
-        try:
-            pid = self.product_choices.get(self.purchase_product.get())
-            if not pid:
-                raise ValueError('请选择商品')
-            qty = int(self.purchase_qty.get())
-            price = money(self.purchase_price.get())
-            purchase_id = create_purchase(pid, qty, price)
-            self.purchase_qty.delete(0,'end')
-            messagebox.showinfo('采购成功', f'采购入库已保存，编号：{purchase_id}')
-            self.refresh_all()
-        except ValueError as ex:
-            messagebox.showerror('入库失败',str(ex))
 
     def build_sale(self):
         f = self.frames['销售开单']
@@ -1213,9 +1227,11 @@ class App(tk.Tk):
         checked = self.checked_product_ids.intersection(str(p['id']) for p in products)
         self.product_tree.delete(*self.product_tree.get_children())
         for p in products:
+            if self.product_search.get().strip().casefold() not in (p['sku'] + ' ' + p['name']).casefold():
+                continue
             tag = ('low',) if p['stock'] <= p['min_stock'] else ()
-            self.product_tree.insert('','end',iid=str(p['id']),text='☐',values=(p['id'],p['sku'],p['name'],p['unit'],fmt(p['purchase_price']),fmt(p['sale_price']),p['stock'],p['min_stock']),tags=tag)
-        self.product_tree.selection_set(list(checked))
+            self.product_tree.insert('','end',iid=str(p['id']),text='☐',values=(p['id'],p['sku'],p['name'],p['unit'],fmt(p['purchase_price']),fmt(p['sale_price']),p['stock'],p['min_stock'],'采购入库'),tags=tag)
+        self.product_tree.selection_set([row for row in checked if self.product_tree.exists(row)])
         self.sync_product_checks()
         self.product_tree.tag_configure('low',background='#ffe6e6')
         self.product_choices = {f"{p['sku']} | {p['name']} (库存{p['stock']})":p['id'] for p in products}
@@ -1234,13 +1250,7 @@ class App(tk.Tk):
             label: f"{c['id']} {c['name']} {c['phone']}" for label, c in zip(self.customer_choices, customers)})
         self.sale_customer.set(next((label for label, cid in self.customer_choices.items()
                                      if cid == selected_customer), ''))
-        purchases = query('''SELECT pi.id,pu.number,pu.created_at,pr.sku,pr.name,pi.qty,pi.unit_price,pi.amount
-                             FROM purchases pu JOIN purchase_items pi ON pi.purchase_id=pu.id
-                             JOIN products pr ON pr.id=pi.product_id ORDER BY pu.id DESC LIMIT 500''')
-        self.purchase_tree.delete(*self.purchase_tree.get_children())
-        for p in purchases:
-            self.purchase_tree.insert('','end',iid=str(p[0]),text='☐',values=(p[1],p[2],p[3],p[4],p[5],fmt(p[6]),fmt(p[7])))
-        self.sync_purchase_checks()
+        self.refresh_purchase_history()
         rows = self.sale_rows()
         self.history_tree.delete(*self.history_tree.get_children())
         self.debt_tree.delete(*self.debt_tree.get_children())
@@ -1249,6 +1259,20 @@ class App(tk.Tk):
             self.history_tree.insert('','end',values=vals)
             if r['due'] > 0:
                 self.debt_tree.insert('','end',values=vals)
+
+    def clear_purchase_filter(self):
+        self.purchase_product.set('')
+        self.refresh_purchase_history()
+
+    def refresh_purchase_history(self):
+        product_id = self.product_choices.get(self.purchase_product.get())
+        purchases = query('''SELECT pi.id,pu.number,pu.created_at,pr.sku,pr.name,pi.qty,pi.unit_price,pi.amount
+                             FROM purchases pu JOIN purchase_items pi ON pi.purchase_id=pu.id
+                             JOIN products pr ON pr.id=pi.product_id WHERE (? IS NULL OR pi.product_id=?) ORDER BY pu.id DESC''', (product_id, product_id))
+        self.purchase_tree.delete(*self.purchase_tree.get_children())
+        for p in purchases:
+            self.purchase_tree.insert('','end',iid=str(p[0]),text='☐',values=(p[1],p[2],p[3],p[4],p[5],fmt(p[6]),fmt(p[7])))
+        self.sync_purchase_checks()
 
     def print_selected(self):
         selected = self.history_tree.selection()
@@ -1363,19 +1387,20 @@ if __name__ == '__main__':
                 window.update()
                 assert selector.get() in selector.options
             assert window.sale_price.get() == '23.00'
-            window.tabs.select(window.frames['采购入库'])
+            dialog = window.open_product_purchase(1)
             window.update()
-            selector = window.purchase_product
-            selector.entry.focus_force()
-            selector.entry.event_generate('<Button-1>', x=5, y=5)
+            assert '采购入库' in dialog.title()
+            entries = [w for w in dialog.winfo_children()[0].winfo_children() if isinstance(w, ttk.Entry)]
+            entries[0].insert(0, '3')
+            entries[1].delete(0, 'end')
+            entries[1].insert(0, '12.00')
+            buttons = [w for w in dialog.winfo_children()[0].winfo_children() if isinstance(w, ttk.Frame)][0]
+            next(w for w in buttons.winfo_children() if w.cget('text') == '保存').invoke()
+            assert query('SELECT stock FROM products WHERE id=1')[0][0] == 3
+            window.open_purchase_history()
             window.update()
-            assert selector.results.size() == 13
-            assert selector.popup.winfo_viewable()
-            selector.entry.insert(0, '测试配件')
-            selector.show_results()
-            assert len(selector.matches) == 1
-            selector.accept()
-            assert window.purchase_price.get() == '0.00'
+            assert window.purchase_window.winfo_viewable()
+            window.purchase_window.withdraw()
             window.tabs.select(window.frames['商品库存'])
             window.update()
             window.product_unit.entry.focus_force()
@@ -1403,7 +1428,8 @@ if __name__ == '__main__':
             create_purchase(1, 10, 100)
             window.refresh_all()
             window.toggle_all_purchases()
-            assert len(window.purchase_tree.selection()) == 1
+            assert len(window.purchase_tree.selection()) == 2
+            window.purchase_tree.selection_set(window.purchase_tree.get_children()[0])
             window.edit_purchase()
             window.update()
             editor = next(w for w in window.winfo_children() if isinstance(w, tk.Toplevel) and w.title() == '修改采购入库')
@@ -1414,7 +1440,7 @@ if __name__ == '__main__':
             editor = next(w for w in window.winfo_children() if isinstance(w, tk.Toplevel) and w.title().startswith('修改商品'))
             editor.destroy()
             assert window.title() == APP_NAME
-            assert len(window.tabs.tabs()) == 7
+            assert len(window.tabs.tabs()) == 6
             assert hasattr(window, 'app_icon')
             window.destroy()
             Path(sys.argv[2]).write_text(json.dumps({'ok': True, 'name': APP_NAME}, ensure_ascii=False), encoding='utf-8')
