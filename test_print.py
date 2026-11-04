@@ -284,6 +284,21 @@ class PrintTests(unittest.TestCase):
         self.assertEqual(screen.cart, [(self.product, 2, 2300)])
         screen.redraw_cart.assert_called_once()
 
+    def test_customer_delete_preserves_sales_and_debt(self):
+        unused = self.app.create_customer('可删除客户')
+        self.app.delete_customer(unused)
+        self.assertFalse(self.app.query('SELECT id FROM customers WHERE id=?', (unused,)))
+        with self.assertRaises(ValueError):
+            self.app.delete_customer(unused)
+        sale = self.app.create_sale(self.customer, [(self.product, 2, 2300)], paid=1000)
+        with self.assertRaises(ValueError):
+            self.app.delete_customer(self.customer)
+        self.assertTrue(self.app.query('SELECT id FROM customers WHERE id=?', (self.customer,)))
+        self.assertEqual(self.app.query('SELECT total FROM sales WHERE id=?', (sale,))[0][0], 4600)
+        self.app.receive_payment(sale, 3600)
+        with self.assertRaises(ValueError):
+            self.app.delete_customer(self.customer)
+
 
 if __name__ == '__main__':
     unittest.main()

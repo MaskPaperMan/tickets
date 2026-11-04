@@ -319,6 +319,16 @@ def delete_products(product_ids):
         c.executemany('UPDATE products SET active=0 WHERE id=?', [(pid,) for pid in product_ids])
 
 
+def delete_customer(customer_id):
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        if not c.execute('SELECT 1 FROM customers WHERE id=?', (customer_id,)).fetchone():
+            raise ValueError('客户不存在或已删除')
+        if c.execute('SELECT 1 FROM sales WHERE customer_id=?', (customer_id,)).fetchone():
+            raise ValueError('该客户已有销售记录，不能删除，以保留历史单据和欠款信息')
+        c.execute('DELETE FROM customers WHERE id=?', (customer_id,))
+
+
 def create_customer(name, phone='', address=''):
     name = name.strip()
     if not name:
@@ -596,7 +606,7 @@ class App(tk.Tk):
         self.tabs = ttk.Notebook(self)
         self.tabs.pack(fill='both', expand=True, padx=12, pady=12)
         self.frames = {}
-        for name in ['销售开单', '商品库存', '客户管理', '客户欠款', '销售记录', '系统设置']:
+        for name in ['销售开单', '商品库存', '客户管理', '账款管理', '销售记录', '系统设置']:
             f = ttk.Frame(self.tabs, padding=10)
             self.tabs.add(f, text=name)
             self.frames[name] = f
@@ -620,10 +630,14 @@ class App(tk.Tk):
         for col, title, width in headings:
             tree.heading(col, text=title)
             tree.column(col, width=width, minwidth=65)
-        tree.pack(side='left', fill='both', expand=True)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        tree.grid(row=0, column=0, sticky='nsew')
         sb = ttk.Scrollbar(frame, command=tree.yview)
-        sb.pack(side='right', fill='y')
-        tree.configure(yscrollcommand=sb.set)
+        sb.grid(row=0, column=1, sticky='ns')
+        horizontal = ttk.Scrollbar(frame, orient='horizontal', command=tree.xview)
+        horizontal.grid(row=1, column=0, sticky='ew')
+        tree.configure(yscrollcommand=sb.set, xscrollcommand=horizontal.set)
         return tree
 
     def formline(self, parent, fields):
@@ -637,36 +651,26 @@ class App(tk.Tk):
             controls[label] = ent
         return line, controls
 
+    def page_toolbar(self, parent, buttons=(), refresh=False):
+        bar = ttk.Frame(parent)
+        bar.pack(fill='x', pady=(4, 8))
+        for label, command in buttons:
+            ttk.Button(bar, text=label, command=command).pack(side='left', padx=(0, 8))
+        if refresh:
+            ttk.Button(bar, text='刷新', command=self.refresh_all).pack(side='right')
+        return bar
+
     def build_products(self):
         f = self.frames['商品库存']
-        ttk.Label(f, text='货号在保存时自动生成，例如 SP000001。').pack(anchor='w', pady=5)
-        line, self.p_entries = self.formline(f, [('商品名称', 24)])
-        ttk.Label(line, text='单位').pack(side='left', padx=4)
-        self.product_unit = SearchSelect(line, width=5)
-        self.product_unit.set_options(('个', '件'))
-        self.product_unit.set('件')
-        self.product_unit.pack(side='left', padx=(0, 10))
-        for label, width in [('售价', 10), ('进价', 10), ('预警库存', 9)]:
-            ttk.Label(line, text=label).pack(side='left', padx=4)
-            entry = ttk.Entry(line, width=width)
-            entry.pack(side='left', padx=(0, 10))
-            self.p_entries[label] = entry
-        ttk.Button(line, text='新增', command=self.add_product).pack(side='left')
-        ttk.Button(line, text='刷新', command=self.refresh_all).pack(side='left', padx=5)
-        actions = ttk.Frame(f)
-        actions.pack(fill='x', pady=4)
-        ttk.Button(actions, text='删除', command=self.do_delete_product).pack(side='left')
-        ttk.Button(actions, text='修改', command=self.edit_product).pack(side='left', padx=5)
-        ttk.Label(actions, text='仅可删除零库存商品，历史单据和流水保留。').pack(side='left', padx=10)
-        ttk.Button(actions, text='入库记录', command=self.open_purchase_history).pack(side='left', padx=5)
+        self.page_toolbar(f, [('新增', self.add_product), ('入库记录', self.open_purchase_history)], refresh=True)
         search = ttk.Frame(f)
-        search.pack(fill='x')
+        search.pack(fill='x', pady=6)
         ttk.Label(search, text='搜索商品').pack(side='left')
         self.product_search = tk.StringVar()
         ttk.Entry(search, textvariable=self.product_search, width=36).pack(side='left', padx=5)
         self.product_search.trace_add('write', lambda *_: self.refresh_all())
         self.product_tree = self.tree(f, ['id','sku','name','unit','cost','price','stock','minstock','purchase'],
-            [('id','ID',45),('sku','货号',100),('name','商品名称',250),('unit','单位',70),('cost','参考进价',90),('price','销售价',90),('stock','库存',80),('minstock','预警值',80),('purchase','操作',100)])
+            [('id','ID',45),('sku','货号',100),('name','商品名称',190),('unit','单位',70),('cost','参考进价',90),('price','销售价',90),('stock','库存',80),('minstock','预警值',80),('purchase','操作',210)])
         self.checked_product_ids = set()
         self.product_tree.configure(show='tree headings', selectmode='extended')
         self.product_tree.column('#0', width=65, minwidth=65, stretch=False)
@@ -674,6 +678,80 @@ class App(tk.Tk):
         self.product_tree.bind('<Button-1>', self.toggle_product_check)
         self.product_tree.bind('<<TreeviewSelect>>', self.sync_product_checks)
         self.product_tree.bind('<space>', self.toggle_focused_product)
+        self.row_buttons(self.product_tree, 'purchase', [
+            ('采购', lambda row: self.open_product_purchase(int(row))),
+            ('修改', lambda row: self.product_action(row, self.edit_product)),
+            ('删除', lambda row: self.product_action(row, self.do_delete_product))])
+
+    def product_action(self, row, action):
+        self.product_tree.selection_set(row)
+        action()
+
+    def row_buttons(self, tree, column, actions, action_filter=None):
+        """仅为可见行放置真实按钮；滚动后按单元格位置重新排布。"""
+        # 使用紧凑边框，避免 macOS 原生按钮隐藏的左右留白。
+        style = ttk.Style(tree)
+        if 'Compact.border' not in style.element_names():
+            style.element_create('Compact.border', 'from', 'clam', 'Button.border')
+        style.layout('Compact.TButton', [('Compact.border', {'sticky': 'nswe', 'children': [
+            ('Button.padding', {'sticky': 'nswe', 'children': [('Button.label', {'sticky': 'nswe'})]})]})])
+        style.configure('Compact.TButton', padding=(5, 2), borderwidth=1, relief='raised',
+                        background='#f7f7f7', foreground='#222222', anchor='center')
+        style.map('Compact.TButton', background=[('pressed', '#dce6ef'), ('active', '#edf3f8')])
+        probe = ttk.Button(tree, text=max((label for label, _ in actions), key=len), width=0, style='Compact.TButton')
+        probe.update_idletasks()
+        button_width = probe.winfo_reqwidth()
+        button_height = probe.winfo_reqheight()
+        probe.destroy()
+        row_height = max(32, button_height + 8)
+        style_name = 'Action' + column + '.Treeview'
+        ttk.Style(tree).configure(style_name, rowheight=row_height)
+        tree.configure(style=style_name)
+        action_width = len(actions) * button_width + max(0, len(actions)-1) * 2 + 8
+        tree.column(column, width=action_width, minwidth=action_width, stretch=False)
+        frames = {}
+        tree.action_frames = frames
+        def arrange():
+            if not tree.winfo_exists():
+                return
+            visible = {}
+            if tree.winfo_viewable():
+                for row in tree.get_children():
+                    box = tree.bbox(row, column)
+                    if box:
+                        visible[row] = box
+            for row in list(frames):
+                if row not in visible:
+                    frames.pop(row).destroy()
+            for row, (x, y, width, height) in visible.items():
+                row_actions = [(label, command) for label, command in actions
+                               if action_filter is None or action_filter(row, label)]
+                labels = tuple(label for label, _ in row_actions)
+                if row in frames and frames[row].action_labels != labels:
+                    frames.pop(row).destroy()
+                if row not in frames:
+                    frame = ttk.Frame(tree)
+                    frames[row] = frame
+                    frame.action_labels = labels
+                    for index, (label, command) in enumerate(row_actions):
+                        ttk.Button(frame, text=label, width=0, style='Compact.TButton',
+                                   command=lambda r=row, c=command: c(r)).pack(side='left', fill='y', padx=(0 if index == 0 else 2, 0))
+                frames[row].place(x=x+4, y=y+4, width=max(1, width-8), height=height-8)
+            tree.after(150, arrange)
+        arrange()
+
+    def sales_search(self, parent, show_due_filter=False):
+        line = ttk.Frame(parent)
+        line.pack(fill='x', pady=6)
+        ttk.Label(line, text='搜索客户、电话、单号或日期').pack(side='left')
+        value = tk.StringVar()
+        ttk.Entry(line, textvariable=value, width=38).pack(side='left', padx=6)
+        ttk.Button(line, text='清空', command=lambda: value.set('')).pack(side='left')
+        if show_due_filter:
+            ttk.Checkbutton(line, text='仅看欠款记录', variable=self.only_due,
+                            command=self.refresh_sales).pack(side='left', padx=8)
+        value.trace_add('write', lambda *_: self.refresh_sales())
+        return value
 
     def edit_dialog(self, title, fields, on_save):
         dialog = tk.Toplevel(self)
@@ -748,11 +826,6 @@ class App(tk.Tk):
         self.sync_product_checks()
 
     def toggle_product_check(self, event):
-        if self.product_tree.identify_region(event.x, event.y) == 'cell' and self.product_tree.identify_column(event.x) == '#9':
-            row = self.product_tree.identify_row(event.y)
-            if row:
-                self.open_product_purchase(int(row))
-                return 'break'
         if (self.product_tree.identify_region(event.x, event.y) in ('tree', 'cell')
                 and self.product_tree.identify_column(event.x) == '#0'):
             row = self.product_tree.identify_row(event.y)
@@ -775,21 +848,21 @@ class App(tk.Tk):
         self.sync_product_checks()
 
     def add_product(self):
-        try:
-            e = self.p_entries
-            name = e['商品名称'].get().strip()
-            unit = self.product_unit.get()
-            price = money(e['售价'].get() or '0')
-            cost = money(e['进价'].get() or '0')
-            minimum = int(e['预警库存'].get() or '0')
-            if minimum < 0:
-                raise ValueError('预警库存不能为负数')
-            create_product(name, unit, price, cost, minimum)
-            for item in e.values():
-                item.delete(0,'end')
+        def save(values):
+            try:
+                minimum = int(values['预警库存'].strip() or '0')
+            except ValueError:
+                raise ValueError('预警库存请输入非负整数') from None
+            create_product(values['商品名称'], values['单位'],
+                           money(values['销售价（元）'].strip() or '0'),
+                           money(values['参考进价（元）'].strip() or '0'), minimum)
+            self.product_search.set('')
             self.refresh_all()
-        except (ValueError, sqlite3.IntegrityError) as ex:
-            messagebox.showerror('新增失败', str(ex))
+
+        return self.edit_dialog('新增商品（货号自动生成）',
+                                [('商品名称', '', None), ('单位', '件', ('个', '件')),
+                                 ('销售价（元）', '0.00', None), ('参考进价（元）', '0.00', None),
+                                 ('预警库存', '0', None)], save)
 
     def do_delete_product(self):
         selected = self.product_tree.selection()
@@ -831,12 +904,36 @@ class App(tk.Tk):
 
     def build_customers(self):
         f = self.frames['客户管理']
-        line, self.c_entries = self.formline(f, [('客户名称', 23), ('电话', 20), ('地址', 38)])
-        ttk.Button(line, text='新增客户', command=self.add_customer).pack(side='left')
-        ttk.Button(line, text='修改', command=self.edit_customer).pack(side='left', padx=5)
-        self.customer_tree = self.tree(f, ['id','name','phone','address'],
-            [('id','ID',60),('name','客户名称',210),('phone','联系电话',170),('address','客户地址',380)])
-        self.customer_tree.bind('<Double-1>', lambda _: self.edit_customer())
+        self.page_toolbar(f, [('新增客户', self.add_customer)], refresh=True)
+        search = ttk.Frame(f)
+        search.pack(fill='x', pady=6)
+        ttk.Label(search, text='搜索客户名称、电话或地址').pack(side='left')
+        self.customer_search = tk.StringVar()
+        ttk.Entry(search, textvariable=self.customer_search, width=38).pack(side='left', padx=6)
+        ttk.Button(search, text='清空', command=lambda: self.customer_search.set('')).pack(side='left')
+        self.customer_search.trace_add('write', lambda *_: self.refresh_all())
+        self.customer_tree = self.tree(f, ['id','name','phone','address','actions'],
+            [('id','ID',60),('name','客户名称',210),('phone','联系电话',170),('address','客户地址',380),('actions','操作',120)])
+        self.row_buttons(self.customer_tree, 'actions', [
+            ('修改', lambda row: self.customer_action(row, self.edit_customer)),
+            ('删除', lambda row: self.customer_action(row, self.do_delete_customer))])
+
+    def customer_action(self, row, action):
+        self.customer_tree.selection_set(row)
+        action()
+
+    def do_delete_customer(self):
+        selected = self.customer_tree.selection()
+        if not selected:
+            return
+        values = self.customer_tree.item(selected[0], 'values')
+        if not messagebox.askyesno('删除客户', f'确定删除客户“{values[1]}”？', parent=self):
+            return
+        try:
+            delete_customer(int(values[0]))
+            self.refresh_all()
+        except (ValueError, sqlite3.Error) as ex:
+            messagebox.showerror('删除失败', str(ex), parent=self)
 
     def edit_customer(self):
         selected = self.customer_tree.selection()
@@ -854,14 +951,10 @@ class App(tk.Tk):
                                     ('电话', values[2], None), ('地址', values[3], None)], save)
 
     def add_customer(self):
-        try:
-            e = self.c_entries
-            create_customer(e['客户名称'].get(), e['电话'].get(), e['地址'].get())
-            for item in e.values():
-                item.delete(0,'end')
+        def save(values):
+            create_customer(values['客户名称'], values['电话'], values['地址'])
             self.refresh_all()
-        except (ValueError, sqlite3.IntegrityError) as ex:
-            messagebox.showerror('新增失败', str(ex))
+        return self.edit_dialog('新增客户', [('客户名称', '', None), ('电话', '', None), ('地址', '', None)], save)
 
     def open_product_purchase(self, product_id):
         products = query('SELECT * FROM products WHERE id=? AND active=1', (product_id,))
@@ -1082,6 +1175,9 @@ class App(tk.Tk):
             p = query('SELECT sale_price FROM products WHERE id=?',(pid,))[0]
             self.sale_price.delete(0,'end')
             self.sale_price.insert(0,fmt(p['sale_price']))
+            if _ is not None:
+                self.sale_qty.delete(0, 'end')
+                self.sale_qty.insert(0, '1')
 
     def add_cart(self):
         try:
@@ -1179,14 +1275,20 @@ class App(tk.Tk):
             messagebox.showerror('销售失败',str(ex))
 
     def build_debts(self):
-        f = self.frames['客户欠款']
-        ttk.Label(f,text='显示尚未结清的销售单；选择一条后点击“登记收款”。').pack(anchor='w',pady=6)
-        actions = ttk.Frame(f)
-        actions.pack(fill='x')
-        ttk.Button(actions,text='登记收款',command=self.do_receive).pack(side='left',padx=4)
-        ttk.Button(actions,text='刷新',command=self.refresh_all).pack(side='left',padx=4)
-        self.debt_tree = self.tree(f,['id','number','customer','date','total','paid','due'],
-            [('id','单据ID',70),('number','销售单号',205),('customer','客户',160),('date','日期',155),('total','应收',95),('paid','已收',95),('due','未收',95)])
+        f = self.frames['账款管理']
+        self.page_toolbar(f, refresh=True)
+        self.only_due = tk.BooleanVar(value=False)
+        self.debt_search = self.sales_search(f, show_due_filter=True)
+        self.debt_tree = self.tree(f,['id','number','customer','date','total','paid','due','account_actions'],
+            [('id','单据ID',70),('number','销售单号',205),('customer','客户',160),('date','日期',155),('total','应收',95),('paid','已收',95),('due','未收',95),('account_actions','操作',180)])
+        self.row_buttons(self.debt_tree, 'account_actions', [
+            ('明细', lambda row: self.show_sale_detail(int(row))),
+            ('登记收款', self.receive_for_row)],
+            action_filter=lambda row, label: label == '明细' or money(self.debt_tree.item(row, 'values')[6]) > 0)
+
+    def receive_for_row(self, row):
+        self.debt_tree.selection_set(row)
+        self.do_receive()
 
     def do_receive(self):
         selected = self.debt_tree.selection()
@@ -1206,16 +1308,14 @@ class App(tk.Tk):
 
     def build_history(self):
         f = self.frames['销售记录']
-        actions = ttk.Frame(f)
-        actions.pack(fill='x')
-        ttk.Button(actions,text='打印选中单据',command=self.print_selected).pack(side='left',padx=5)
-        ttk.Button(actions,text='导出销售CSV',command=self.export_sales).pack(side='left',padx=5)
-        ttk.Button(actions,text='刷新',command=self.refresh_all).pack(side='left',padx=5)
-        self.history_tree = self.tree(f,['id','number','customer','date','total','paid','due'],
-            [('id','单据ID',70),('number','销售单号',205),('customer','客户',155),('date','日期',155),('total','应收',95),('paid','已收',95),('due','欠款',95)])
+        self.page_toolbar(f, [('打印选中单据', self.print_selected), ('导出销售CSV', self.export_sales)], refresh=True)
+        self.history_search = self.sales_search(f)
+        self.history_tree = self.tree(f,['id','number','customer','date','total','paid','due','detail'],
+            [('id','单据ID',70),('number','销售单号',205),('customer','客户',155),('date','日期',155),('total','应收',95),('paid','已收',95),('due','欠款',95),('detail','操作',80)])
+        self.row_buttons(self.history_tree, 'detail', [('明细', lambda row: self.show_sale_detail(int(row)))])
 
     def sale_rows(self, where=''):
-        return query('''SELECT s.id,s.number,c.name customer,s.created_at,s.total,
+        return query('''SELECT s.id,s.number,c.name customer,c.phone,s.created_at,s.total,
                       COALESCE(SUM(p.amount),0) paid,s.total-COALESCE(SUM(p.amount),0) due
                       FROM sales s JOIN customers c ON c.id=s.customer_id
                       LEFT JOIN payments p ON p.sale_id=s.id
@@ -1230,7 +1330,7 @@ class App(tk.Tk):
             if self.product_search.get().strip().casefold() not in (p['sku'] + ' ' + p['name']).casefold():
                 continue
             tag = ('low',) if p['stock'] <= p['min_stock'] else ()
-            self.product_tree.insert('','end',iid=str(p['id']),text='☐',values=(p['id'],p['sku'],p['name'],p['unit'],fmt(p['purchase_price']),fmt(p['sale_price']),p['stock'],p['min_stock'],'采购入库'),tags=tag)
+            self.product_tree.insert('','end',iid=str(p['id']),text='☐',values=(p['id'],p['sku'],p['name'],p['unit'],fmt(p['purchase_price']),fmt(p['sale_price']),p['stock'],p['min_stock'],''),tags=tag)
         self.product_tree.selection_set([row for row in checked if self.product_tree.exists(row)])
         self.sync_product_checks()
         self.product_tree.tag_configure('low',background='#ffe6e6')
@@ -1244,21 +1344,55 @@ class App(tk.Tk):
         customers = query('SELECT * FROM customers ORDER BY id DESC')
         self.customer_tree.delete(*self.customer_tree.get_children())
         for c in customers:
-            self.customer_tree.insert('','end',values=(c['id'],c['name'],c['phone'],c['address']))
+            text = f"{c['name']} {c['phone']} {c['address']}".casefold()
+            if not all(word in text for word in self.customer_search.get().casefold().split()):
+                continue
+            self.customer_tree.insert('','end',iid=str(c['id']),values=(c['id'],c['name'],c['phone'],c['address'],''))
         self.customer_choices = {f"{c['id']} | {c['name']}" + (f"（{c['phone']}）" if c['phone'] else ''):c['id'] for c in customers}
         self.sale_customer.set_options(self.customer_choices, {
             label: f"{c['id']} {c['name']} {c['phone']}" for label, c in zip(self.customer_choices, customers)})
         self.sale_customer.set(next((label for label, cid in self.customer_choices.items()
                                      if cid == selected_customer), ''))
         self.refresh_purchase_history()
+        self.refresh_sales()
+
+    def refresh_sales(self):
         rows = self.sale_rows()
         self.history_tree.delete(*self.history_tree.get_children())
         self.debt_tree.delete(*self.debt_tree.get_children())
         for r in rows:
             vals = (r['id'],r['number'],r['customer'],r['created_at'],fmt(r['total']),fmt(r['paid']),fmt(r['due']))
-            self.history_tree.insert('','end',values=vals)
-            if r['due'] > 0:
-                self.debt_tree.insert('','end',values=vals)
+            text = f"{r['customer']} {r['phone']} {r['number']} {r['created_at']}".casefold()
+            if all(word in text for word in self.history_search.get().casefold().split()):
+                self.history_tree.insert('','end',iid=str(r['id']),values=vals+('',))
+            if (not self.only_due.get() or r['due'] > 0) and all(word in text for word in self.debt_search.get().casefold().split()):
+                self.debt_tree.insert('','end',iid=str(r['id']),values=vals+('',))
+
+    def show_sale_detail(self, sale_id):
+        sale = query('SELECT s.*,c.name customer,c.phone,c.address FROM sales s JOIN customers c ON c.id=s.customer_id WHERE s.id=?', (sale_id,))[0]
+        items = query('SELECT * FROM sale_items WHERE sale_id=? ORDER BY id', (sale_id,))
+        payments = query('SELECT * FROM payments WHERE sale_id=? ORDER BY created_at,id', (sale_id,))
+        paid = sum(row['amount'] for row in payments)
+        dialog = tk.Toplevel(self)
+        dialog.title('销售明细 · ' + sale['number'])
+        dialog.geometry('950x650')
+        dialog.transient(self)
+        content = ttk.Frame(dialog, padding=14)
+        content.pack(fill='both', expand=True)
+        info = f"单号：{sale['number']}    日期：{sale['created_at']}\n客户：{sale['customer']}    电话：{sale['phone']}\n客户地址：{sale['address']}\n备注：{sale['note']}"
+        ttk.Label(content, text=info, wraplength=880, justify='left').pack(anchor='w')
+        ttk.Label(content, text='销售清单').pack(anchor='w', pady=(10,0))
+        listing = self.tree(content, ['sku','name','unit','qty','price','amount'],
+                            [('sku','货号',120),('name','商品名称',250),('unit','单位',60),('qty','数量',80),('price','单价',100),('amount','金额',110)], height=6)
+        for item in items:
+            listing.insert('', 'end', values=(item['sku'],item['product_name'],item['unit'],item['qty'],fmt(item['unit_price']),fmt(item['amount'])))
+        ttk.Label(content, text=f"应收：¥{fmt(sale['total'])}    已收：¥{fmt(paid)}    未收：¥{fmt(sale['total']-paid)}").pack(anchor='w', pady=6)
+        ttk.Label(content, text='收款流水' if payments else '收款流水：暂无收款记录').pack(anchor='w')
+        payment_tree = self.tree(content, ['date','amount','note'], [('date','收款时间',200),('amount','金额',120),('note','备注',400)], height=4)
+        for payment in payments:
+            payment_tree.insert('', 'end', values=(payment['created_at'],fmt(payment['amount']),payment['note']))
+        ttk.Button(content, text='关闭', command=dialog.destroy).pack(anchor='e')
+        return dialog
 
     def clear_purchase_filter(self):
         self.purchase_product.set('')
@@ -1387,6 +1521,7 @@ if __name__ == '__main__':
                 window.update()
                 assert selector.get() in selector.options
             assert window.sale_price.get() == '23.00'
+            assert window.sale_qty.get() == '1'
             dialog = window.open_product_purchase(1)
             window.update()
             assert '采购入库' in dialog.title()
@@ -1403,12 +1538,16 @@ if __name__ == '__main__':
             window.purchase_window.withdraw()
             window.tabs.select(window.frames['商品库存'])
             window.update()
-            window.product_unit.entry.focus_force()
-            window.product_unit.entry.event_generate('<Button-1>', x=5, y=5)
+            dialog = window.add_product()
             window.update()
-            assert window.product_unit.matches == ['个', '件']
-            window.product_unit.accept()
-            assert window.product_unit.get() == '个'
+            unit = next(w for w in dialog.winfo_children()[0].winfo_children() if isinstance(w, SearchSelect))
+            unit.entry.focus_force()
+            unit.entry.event_generate('<Button-1>', x=5, y=5)
+            window.update()
+            assert unit.matches == ['个', '件']
+            unit.accept()
+            assert unit.get() == '个'
+            dialog.destroy()
             dialog = window.edit_dialog('下拉框检查', [('商品', '', list(window.product_choices))], lambda _: None)
             window.update()
             selector = next(control for control in dialog.winfo_children()[0].winfo_children()
@@ -1439,6 +1578,66 @@ if __name__ == '__main__':
             window.update()
             editor = next(w for w in window.winfo_children() if isinstance(w, tk.Toplevel) and w.title().startswith('修改商品'))
             editor.destroy()
+            sale_id = create_sale(1, [(1, 2, 2300)], paid=1000)
+            window.refresh_all()
+            window.history_search.set('搜索测试客户')
+            window.debt_search.set('13800138000')
+            assert len(window.history_tree.get_children()) == 1
+            assert len(window.debt_tree.get_children()) == 1
+            window.history_search.set('不存在的单号')
+            assert not window.history_tree.get_children()
+            window.history_search.set('')
+            detail = window.show_sale_detail(sale_id)
+            window.update()
+            assert detail.winfo_viewable()
+            detail.destroy()
+            window.tabs.select(window.frames['商品库存'])
+            for geometry in ('1200x800', '1000x700'):
+                window.geometry(geometry)
+                window.update()
+                window.after(250, window.quit)
+                window.mainloop()
+                window.update_idletasks()
+                assert window.product_tree.action_frames
+                for frame in window.product_tree.action_frames.values():
+                    for button in frame.winfo_children():
+                        assert button.winfo_height() >= button.winfo_reqheight()
+                        assert button.winfo_width() >= button.winfo_reqwidth()
+                        assert button.winfo_x() + button.winfo_width() <= frame.winfo_width()
+            customer_dialog = window.add_customer()
+            window.update()
+            fields = [w for w in customer_dialog.winfo_children()[0].winfo_children() if isinstance(w, ttk.Entry)]
+            fields[0].insert(0, '弹窗新增验证')
+            buttons = next(w for w in customer_dialog.winfo_children()[0].winfo_children() if isinstance(w, ttk.Frame))
+            next(w for w in buttons.winfo_children() if w.cget('text') == '保存').invoke()
+            added = query('SELECT id FROM customers WHERE name=?', ('弹窗新增验证',))[0][0]
+            assert window.customer_tree.exists(str(added))
+            window.customer_action(str(added), window.edit_customer)
+            window.update()
+            next(w for w in window.winfo_children() if isinstance(w, tk.Toplevel) and w.title() == '修改客户').destroy()
+            delete_customer(added)
+            window.refresh_all()
+            assert not window.customer_tree.exists(str(added))
+            window.customer_search.set('13800138000')
+            assert len(window.customer_tree.get_children()) == 1
+            window.customer_search.set('无匹配客户')
+            assert not window.customer_tree.get_children()
+            window.customer_search.set('')
+            window.tabs.select(window.frames['账款管理'])
+            window.update()
+            window.after(250, window.quit)
+            window.mainloop()
+            assert window.debt_tree.action_frames[str(sale_id)].action_labels == ('明细', '登记收款')
+            receive_payment(sale_id, 3600)
+            window.refresh_all()
+            window.update()
+            window.after(250, window.quit)
+            window.mainloop()
+            assert window.debt_tree.exists(str(sale_id))
+            assert window.debt_tree.action_frames[str(sale_id)].action_labels == ('明细',)
+            window.only_due.set(True)
+            window.refresh_sales()
+            assert not window.debt_tree.get_children()
             assert window.title() == APP_NAME
             assert len(window.tabs.tabs()) == 6
             assert hasattr(window, 'app_icon')
