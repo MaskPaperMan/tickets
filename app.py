@@ -1465,7 +1465,7 @@ h1{{text-align:center;font-size:{company['company_name_font']}pt;line-height:1.3
 .meta{{display:grid;grid-template-columns:22% 40% 38%;line-height:1.65;margin-bottom:7mm;overflow-wrap:anywhere}}
 .customer{{grid-column:span 2}}.order{{font-size:inherit}}
 table{{font-size:inherit;width:100%;border-collapse:collapse;table-layout:auto}}
-th,td{{border:1px solid #000;height:8mm;padding:1mm;text-align:center;font-weight:inherit;overflow-wrap:anywhere}}
+th,td{{border:1px solid #000;height:8mm;padding:3mm 1mm;text-align:center;font-weight:inherit;overflow-wrap:anywhere}}
 th{{font-size:inherit}}td.text{{text-align:left}}thead{{display:table-header-group}}tr{{break-inside:avoid}}
 td.number,th.number{{white-space:nowrap;overflow-wrap:normal;word-break:normal;width:1%}}
 .summary td{{height:9mm}}.summary .text{{font-size:inherit}}
