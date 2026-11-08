@@ -17,6 +17,9 @@ APP_NAME = '汽配批发管理系统'
 ASSET_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets'
 COMPANY_FIELDS = {'company_name': '公司名', 'business_scope': '经营范围',
                   'company_address': '公司地址', 'company_phone': '联系电话'}
+FONT_DEFAULTS = {'company_name_font': '25', 'business_scope_font': '18',
+                 'company_address_font': '16', 'company_phone_font': '16', 'body_font': '16'}
+FONT_SIZES = tuple(str(size) for size in range(8, 37))
 DATA_DIR = Path(os.environ.get('LOCALAPPDATA', str(Path.home()))) / 'AutoPartsMVP'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / 'autoparts.db'
@@ -155,16 +158,26 @@ def order_number(prefix):
 
 def load_settings():
     values = dict.fromkeys(COMPANY_FIELDS, '')
+    values.update(FONT_DEFAULTS)
     values.update({r['key']: r['value'] for r in query('SELECT key,value FROM settings')
-                   if r['key'] in COMPANY_FIELDS})
+                   if r['key'] in values})
+    for key, default in FONT_DEFAULTS.items():
+        if values[key] not in FONT_SIZES:
+            values[key] = default
     return values
 
 
 def save_settings(values):
+    fonts = {}
+    for key in FONT_DEFAULTS:
+        if key in values:
+            fonts[key] = str(values[key]).strip()
+            if fonts[key] not in FONT_SIZES:
+                raise ValueError('字号请选择8至36磅之间的整数')
     with db() as c:
         c.executemany('INSERT INTO settings(key,value) VALUES(?,?) '
                       'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                      [(key, values.get(key, '').strip()) for key in COMPANY_FIELDS])
+                      [(key, values.get(key, '').strip()) for key in COMPANY_FIELDS] + list(fonts.items()))
 
 
 def create_product(name, unit='件', price=0, cost=0, minimum=0):
@@ -889,17 +902,35 @@ class App(tk.Tk):
         ttk.Label(f, text='保存后用于销售单打印，重新打开程序仍会保留。').pack(anchor='w', pady=8)
         self.settings_entries = {}
         values = load_settings()
-        for key, label in COMPANY_FIELDS.items():
-            _, entries = self.formline(f, [(label, 65)])
-            entries[label].insert(0, values[key])
-            self.settings_entries[key] = entries[label]
+        form = ttk.Frame(f)
+        form.pack(fill='x')
+        ttk.Label(form, text='公司信息').grid(row=0, column=1, sticky='w', padx=8, pady=6)
+        ttk.Label(form, text='字号（磅）').grid(row=0, column=2, sticky='w', padx=8, pady=6)
+        for row, (key, label) in enumerate(COMPANY_FIELDS.items(), 1):
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky='w', pady=6)
+            entry = ttk.Entry(form, width=65)
+            entry.insert(0, values[key])
+            entry.grid(row=row, column=1, sticky='ew', padx=8, pady=6)
+            self.settings_entries[key] = entry
+            selector = SearchSelect(form, width=8)
+            selector.set_options(FONT_SIZES)
+            selector.set(values[key + '_font'])
+            selector.grid(row=row, column=2, sticky='w', padx=8, pady=6)
+            self.settings_entries[key + '_font'] = selector
+        ttk.Label(form, text='正文').grid(row=5, column=0, sticky='w', pady=6)
+        ttk.Label(form, text='客户信息、商品表格、金额、签名等').grid(row=5, column=1, sticky='w', padx=8)
+        selector = SearchSelect(form, width=8)
+        selector.set_options(FONT_SIZES)
+        selector.set(values['body_font'])
+        selector.grid(row=5, column=2, sticky='w', padx=8, pady=6)
+        self.settings_entries['body_font'] = selector
         ttk.Button(f, text='保存设置', command=self.do_save_settings).pack(anchor='w', pady=12)
 
     def do_save_settings(self):
         try:
             save_settings({key: entry.get() for key, entry in self.settings_entries.items()})
             messagebox.showinfo('保存成功', '公司信息已保存，将用于后续打印。')
-        except sqlite3.Error as ex:
+        except (ValueError, sqlite3.Error) as ex:
             messagebox.showerror('保存失败', str(ex))
 
     def build_customers(self):
@@ -1423,21 +1454,24 @@ class App(tk.Tk):
         items = query('SELECT * FROM sale_items WHERE sale_id=? ORDER BY id',(sale_id,))
         paid = query('SELECT COALESCE(SUM(amount),0) v FROM payments WHERE sale_id=?',(sale_id,))[0]['v']
         safe = lambda x: html.escape(str(x or ''))
-        rows = ''.join(f"<tr><td>{i}</td><td class='text'>{safe(x['sku'])}</td><td class='text'>{safe(x['product_name'])}</td><td>{safe(x['unit'])}</td><td>{x['qty']}</td><td>{fmt(x['unit_price'])}</td><td>{fmt(x['amount'])}</td><td></td><td></td></tr>" for i,x in enumerate(items,1))
+        rows = ''.join(f"<tr><td>{i}</td><td class='text'>{safe(x['sku'])}</td><td class='text'>{safe(x['product_name'])}</td><td>{safe(x['unit'])}</td><td>{x['qty']}</td><td class='number'>{fmt(x['unit_price'])}</td><td class='number'>{fmt(x['amount'])}</td><td></td><td></td></tr>" for i,x in enumerate(items,1))
         page = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>批发清单 {safe(sale['number'])}</title>
 <style>
 @page{{size:A4 landscape;margin:12mm}}
-*{{box-sizing:border-box}}body{{margin:0;color:#000;background:#fff;font-family:"黑体","SimHei","Heiti SC",sans-serif;font-size:13pt;font-weight:bold}}
+*{{box-sizing:border-box}}body{{margin:0;color:#000;background:#fff;font-family:"黑体","SimHei","Heiti SC",sans-serif;font-size:{company['body_font']}pt;font-weight:bold}}
 .sheet{{max-width:273mm;margin:0 auto;padding-top:3mm}}
-h1{{text-align:center;font-size:25pt;line-height:1.35;margin:0 0 2mm;overflow-wrap:anywhere}}
-.scope{{text-align:center;font-size:18pt;line-height:1.4;margin-bottom:3mm;white-space:pre-wrap;overflow-wrap:anywhere}}
+h1{{text-align:center;font-size:{company['company_name_font']}pt;line-height:1.35;margin:0 0 2mm;overflow-wrap:anywhere}}
+.scope{{text-align:center;font-size:{company['business_scope_font']}pt;line-height:1.4;margin-bottom:3mm;white-space:pre-wrap;overflow-wrap:anywhere}}
 .meta{{display:grid;grid-template-columns:22% 40% 38%;line-height:1.65;margin-bottom:7mm;overflow-wrap:anywhere}}
 .customer{{grid-column:span 2}}.order{{font-size:inherit}}
-table{{font-size:inherit;width:100%;border-collapse:collapse;table-layout:fixed}}
+table{{font-size:inherit;width:100%;border-collapse:collapse;table-layout:auto}}
 th,td{{border:1px solid #000;height:8mm;padding:1mm;text-align:center;font-weight:inherit;overflow-wrap:anywhere}}
 th{{font-size:inherit}}td.text{{text-align:left}}thead{{display:table-header-group}}tr{{break-inside:avoid}}
+td.number,th.number{{white-space:nowrap;overflow-wrap:normal;word-break:normal;width:1%}}
 .summary td{{height:9mm}}.summary .text{{font-size:inherit}}
 .footer{{display:grid;grid-template-columns:62% 38%;gap:3mm 0;line-height:1.6;margin-top:6mm;break-inside:avoid;overflow-wrap:anywhere}}
+.company-address{{font-size:{company['company_address_font']}pt}}
+.company-phone{{font-size:{company['company_phone_font']}pt}}
 .settlement{{grid-column:span 2;font-size:inherit}}.note{{grid-column:span 2;white-space:pre-wrap;font-size:inherit}}
 .signature{{grid-column:2;margin-top:3mm;font-size:inherit;min-height:12mm}}.signature span{{display:inline-block;width:48mm;border-bottom:1px solid #000}}
 .hint{{font-family:inherit;font-size:10pt;color:#666;margin:8mm 0}}
@@ -1448,10 +1482,10 @@ th{{font-size:inherit}}td.text{{text-align:left}}thead{{display:table-header-gro
 <div class="scope">{safe(company['business_scope'])}</div>
 <div class="meta"><div class="customer">客户名称：{safe(sale['customer'])}</div><div>销售日期：{safe(sale['created_at'][:10])}</div>
 <div>电话：{safe(sale['phone'])}</div><div>客户地址：{safe(sale['address'])}</div><div class="order">单号：{safe(sale['number'])}</div></div>
-<table><colgroup><col style="width:7%"><col style="width:12%"><col style="width:21%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:12%"><col style="width:14%"><col style="width:12%"></colgroup>
-<thead><tr><th>序号</th><th>配件编码</th><th>名称</th><th>单位</th><th>数量</th><th>单价</th><th>金额</th><th>品牌</th><th>备注</th></tr></thead>
-<tbody>{rows}</tbody><tbody class="summary"><tr><td colspan="5" class="text">人民币（大写）：{money_upper(sale['total'])}</td><td>------</td><td>{fmt(sale['total'])}</td><td>----------</td><td>------</td></tr></tbody></table>
-<div class="footer"><div>地址：{safe(company['company_address'])}</div><div>电话：{safe(company['company_phone'])}</div>
+<table><colgroup><col style="width:7%"><col style="width:12%"><col style="width:21%"><col style="width:7%"><col style="width:7%"><col><col><col style="width:14%"><col style="width:12%"></colgroup>
+<thead><tr><th>序号</th><th>配件编码</th><th>名称</th><th>单位</th><th>数量</th><th class='number'>单价</th><th class='number'>金额</th><th>品牌</th><th>备注</th></tr></thead>
+<tbody>{rows}</tbody><tbody class="summary"><tr><td colspan="5" class="text">人民币（大写）：{money_upper(sale['total'])}</td><td>------</td><td class='number'>{fmt(sale['total'])}</td><td>----------</td><td>------</td></tr></tbody></table>
+<div class="footer"><div class="company-address">地址：{safe(company['company_address'])}</div><div class="company-phone">电话：{safe(company['company_phone'])}</div>
 <div class="settlement">已收：¥{fmt(paid)}　未收：¥{fmt(sale['total']-paid)}</div>
 {('<div class="note">备注：' + safe(sale['note']) + '</div>') if sale['note'] else ''}
 <div class="signature">客户签名：<span></span></div></div>

@@ -299,6 +299,21 @@ class PrintTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.delete_customer(self.customer)
 
+    def test_print_font_settings(self):
+        values = self.app.load_settings()
+        self.assertEqual(values['body_font'], '16')
+        values.update(company_name_font='28', business_scope_font='20',
+                      company_address_font='14', company_phone_font='15', body_font='18')
+        self.app.save_settings(values)
+        page = self.print_order([(self.product, 1, 2300)])
+        for css in ("font-size:18pt;font-weight:bold", "font-size:28pt;line-height", "font-size:20pt;line-height",
+                    '.company-address{font-size:14pt}', '.company-phone{font-size:15pt}'):
+            self.assertIn(css, page)
+        values['body_font'] = 'bad'
+        with self.assertRaises(ValueError):
+            self.app.save_settings(values)
+        self.assertEqual(self.app.load_settings()['body_font'], '18')
+
 
 if __name__ == '__main__':
     unittest.main()
